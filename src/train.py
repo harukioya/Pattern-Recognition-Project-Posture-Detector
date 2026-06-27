@@ -145,10 +145,6 @@ def main() -> None:
     )
     parser.add_argument("--quiet", action="store_true", help="suppress per-epoch lines")
     parser.add_argument("--mirror", action="store_true", help="add mirrored copies to train set")
-    parser.add_argument("--synth-mediapipe", action="store_true",
-                        help="apply synthetic-MediaPipe noise + yaw augmentation at training time")
-    parser.add_argument("--synth-views", type=int, default=4,
-                        help="if --synth-mediapipe, replicate each clip K times for K random views")
     parser.add_argument("--include-self-data", action="store_true",
                         help="concat self-recorded MediaPipe data into the training set")
     parser.add_argument("--train-split", choices=["train", "trainval"], default="train",
@@ -177,9 +173,6 @@ def main() -> None:
     train_ds = EC3DSequenceDataset(
         seqs, mode=args.train_split, window=args.window,
         feature_mode=args.feature_mode, mirror=args.mirror,
-        synth_mediapipe=args.synth_mediapipe,
-        synth_views_per_clip=args.synth_views,
-        synth_seed=args.seed,
     )
     val_ds = EC3DSequenceDataset(seqs, mode="val", window=args.window, feature_mode=args.feature_mode)
     test_ds = EC3DSequenceDataset(seqs, mode="test", window=args.window, feature_mode=args.feature_mode)

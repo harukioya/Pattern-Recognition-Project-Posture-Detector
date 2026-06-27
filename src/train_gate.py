@@ -86,8 +86,6 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--ckpt-tag", type=str, default="")
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--synth-mediapipe", action="store_true")
-    parser.add_argument("--synth-views", type=int, default=4)
     parser.add_argument("--include-self-data", action="store_true")
     args = parser.parse_args()
 
@@ -99,9 +97,6 @@ def main() -> None:
     seqs = load_sequences()
     train_base = EC3DSequenceDataset(
         seqs, mode="trainval", window=args.window, feature_mode=args.feature_mode,
-        synth_mediapipe=args.synth_mediapipe,
-        synth_views_per_clip=args.synth_views,
-        synth_seed=args.seed,
     )
     test_base = EC3DSequenceDataset(
         seqs, mode="test", window=args.window, feature_mode=args.feature_mode

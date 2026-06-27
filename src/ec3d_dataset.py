@@ -361,9 +361,6 @@ class EC3DSequenceDataset(Dataset):
         stride: int | None = None,
         feature_mode: str = "angles",
         mirror: bool = False,
-        synth_mediapipe: bool = False,
-        synth_views_per_clip: int = 1,
-        synth_seed: int | None = None,
     ) -> None:
         assert mode in {"train", "val", "test", "trainval"}
         keep = {
@@ -377,16 +374,8 @@ class EC3DSequenceDataset(Dataset):
         self.feature_mode = feature_mode
         self.n_features = feature_dim(feature_mode)
         self.mirror = mirror
-        self.synth_mediapipe = synth_mediapipe
-        self.synth_views_per_clip = max(1, int(synth_views_per_clip))
-        self._synth_rng = (
-            np.random.default_rng(synth_seed) if synth_mediapipe else None
-        )
 
         self.samples: list[tuple[np.ndarray, int, int]] = []
-        # Cache raw (T, 25, 3) frame buffers per sample so synth augmentation
-        # can fire on every __getitem__ call rather than once at construction.
-        self._raw_frames: list[np.ndarray] = []
         for s in sequences:
             if s.subject not in keep:
                 continue
@@ -395,44 +384,25 @@ class EC3DSequenceDataset(Dataset):
                 self._add_sequence(mirror_frames(s.frames), s.exercise_id, s.mistake_id)
 
     def _add_sequence(self, raw_frames: np.ndarray, ex_id: int, mis_id: int) -> None:
-        # Pre-compute clip windows on the raw (T, 25, 3) frames so we can
-        # augment on the fly if synth_mediapipe is enabled.
         T = raw_frames.shape[0]
-        clip_starts: list[int] = []
         if T < self.window:
-            # Pad: store as one window pre-padded
             pad = np.zeros((self.window - T, 25, 3), dtype=np.float32)
             raw_clip = np.concatenate([raw_frames, pad], axis=0).astype(np.float32)
-            self._add_clip(raw_clip, ex_id, mis_id)
+            self.samples.append(
+                (extract_features(raw_clip, self.feature_mode), ex_id, mis_id)
+            )
             return
         for start in range(0, T - self.window + 1, self.stride):
             raw_clip = raw_frames[start : start + self.window].astype(np.float32)
-            self._add_clip(raw_clip, ex_id, mis_id)
-
-    def _add_clip(self, raw_clip: np.ndarray, ex_id: int, mis_id: int) -> None:
-        if self.synth_mediapipe:
-            # Store raw frames; features are computed live in __getitem__
-            # with fresh noise each call. Add `synth_views_per_clip` entries
-            # so we effectively K× the dataset.
-            for _ in range(self.synth_views_per_clip):
-                self._raw_frames.append(raw_clip)
-                self.samples.append((None, ex_id, mis_id))  # placeholder
-        else:
-            feats = extract_features(raw_clip, self.feature_mode)
-            self.samples.append((feats, ex_id, mis_id))
+            self.samples.append(
+                (extract_features(raw_clip, self.feature_mode), ex_id, mis_id)
+            )
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, i: int):
-        feats_cached, ex_id, mis_id = self.samples[i]
-        if self.synth_mediapipe:
-            from synth_mediapipe import synth_augment
-            raw = self._raw_frames[i]
-            augmented = synth_augment(raw, rng=self._synth_rng)
-            feats = extract_features(augmented, self.feature_mode)
-        else:
-            feats = feats_cached
+        feats, ex_id, mis_id = self.samples[i]
         return (
             torch.from_numpy(feats),
             torch.tensor(ex_id, dtype=torch.long),
