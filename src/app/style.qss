@@ -1,0 +1,95 @@
+/* Posture Coach — dark theme QSS
+ * ---------------------------------------------------------------
+ * Palette (kept in sync with widget code):
+ *   bg            #0e1117   window + status bar background
+ *   card          #161b22   panel surface
+ *   border        #1f2632   1px hairline between surfaces
+ *   text-primary  #f0f2f5   default label colour
+ *   text-second   #9aa1b3   muted labels (status bar etc.)
+ *   text-dim      #5d6478   disabled / placeholder
+ *   success       #69dc82   reserved for verdict good state
+ *   warning       #ffa55f   reserved for verdict warn state
+ *   accent        #78b4ff   reserved for coaching highlights
+ *
+ * Notes on Qt quirks vs. browser CSS:
+ *   - No box-shadow, no transitions, no CSS variables.
+ *   - border-radius requires a solid background + border to clip
+ *     cleanly, which is why each card sets both.
+ *   - Child QLabel widgets inherit a transparent background only
+ *     if we say so explicitly; otherwise they paint the QWidget
+ *     default and break the rounded corners.
+ *   - Selecting by objectName alone (e.g. #VerdictPanel) matches
+ *     any widget with that name regardless of its base class,
+ *     which keeps us decoupled from whether a panel is a QFrame
+ *     or a plain QWidget.
+ * ---------------------------------------------------------------
+ */
+
+/* ---------- Global defaults ---------- */
+QWidget {
+    background-color: #0e1117;
+    color: #f0f2f5;
+    font-family: "Helvetica Neue", "Arial", sans-serif;
+    font-size: 13px;
+}
+
+QMainWindow {
+    background-color: #0e1117;
+}
+
+QLabel {
+    background-color: transparent;
+    color: #f0f2f5;
+}
+
+/* ---------- Outer window ---------- */
+#MainWindow {
+    background-color: #0e1117;
+}
+
+/* ---------- Camera frame ---------- */
+/* The camera view paints its own pixmap; this is only a fallback
+ * so the area behind the video matches the window before frames
+ * start arriving. No border-radius — the camera blits a flat
+ * rectangle and any rounding would be overdrawn.
+ */
+#CameraFrame {
+    background-color: #0e1117;
+}
+
+/* ---------- Right-column cards ---------- */
+#VerdictPanel,
+#BarsPanel,
+#CoachPanel {
+    background-color: #161b22;
+    border: 1px solid #1f2632;
+    border-radius: 14px;
+    padding: 16px;
+}
+
+/* Make sure labels inside cards don't paint their own
+ * opaque background over the rounded corners.
+ */
+#VerdictPanel QLabel,
+#BarsPanel QLabel,
+#CoachPanel QLabel {
+    background-color: transparent;
+    color: #f0f2f5;
+}
+
+/* ---------- Bottom status strip ---------- */
+#AppStatusBar {
+    background-color: #0e1117;
+    border-top: 1px solid #1f2632;
+    color: #9aa1b3;
+    min-height: 28px;
+    max-height: 28px;
+    padding-left: 10px;
+    padding-right: 10px;
+}
+
+#AppStatusBar QLabel {
+    background-color: transparent;
+    color: #9aa1b3;
+    font-size: 12px;
+}

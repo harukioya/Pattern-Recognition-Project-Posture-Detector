@@ -1,0 +1,33 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Data files (too large for git; download / regenerate via scripts in src/).
+# Easiest rule: exclude everything under data/ except .gitkeep markers.
+data/*
+!data/.gitkeep
+
+# Trained model checkpoints (regenerate via train.py / train_gate.py)
+checkpoints/*.pt
+
+# MediaPipe model files (download via curl from Google's CDN)
+models/*.task
+
+# Self-recorded videos
+recordings/*.mp4
+recordings/*.mov
+
+# macOS
+.DS_Store
+
+# Editor / tool caches
+.idea/
+.vscode/
+.ipynb_checkpoints/
+
+# Scratch / intermediate
+figures/
+*.tmp
+
