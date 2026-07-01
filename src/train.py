@@ -19,10 +19,12 @@ from torch.utils.data import DataLoader
 
 from ec3d_dataset import (
     EC3DSequenceDataset,
+    EXERCISES,
     FEATURE_MODES,
     MISTAKE_LABELS,
     feature_dim,
     load_sequences,
+    local_labels_for_exercise,
 )
 from model import (
     BiLSTMHead,
@@ -94,9 +96,16 @@ def epoch_pass(
 
 
 @torch.no_grad()
-def per_class_report(model: nn.Module, loader: DataLoader, device: torch.device, header: str) -> None:
+def per_class_report(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    header: str,
+    labels: list[str] | None = None,
+) -> None:
     model.eval()
-    n_classes = len(MISTAKE_LABELS)
+    label_space = labels if labels is not None else MISTAKE_LABELS
+    n_classes = len(label_space)
     correct = np.zeros(n_classes, dtype=np.int64)
     total = np.zeros(n_classes, dtype=np.int64)
     all_preds: list[int] = []
@@ -116,7 +125,7 @@ def per_class_report(model: nn.Module, loader: DataLoader, device: torch.device,
         if total[c] == 0:
             continue
         print(
-            f"  {MISTAKE_LABELS[c]:30s} {correct[c]:3d}/{total[c]:3d}  ({correct[c] / total[c]:.2%})"
+            f"  {label_space[c]:30s} {correct[c]:3d}/{total[c]:3d}  ({correct[c] / total[c]:.2%})"
         )
     print(
         f"  ---> overall acc: {sum(correct) / max(sum(total), 1):.2%}, "
@@ -161,6 +170,16 @@ def main() -> None:
     parser.add_argument("--stgcn-hidden", type=int, default=64)
     parser.add_argument("--stgcn-layers", type=int, default=3)
     parser.add_argument("--stgcn-temporal-kernel", type=int, default=9)
+    parser.add_argument(
+        "--exercise-filter",
+        choices=list(EXERCISES),
+        default=None,
+        help=(
+            "Train a per-exercise specialist. Filters both EC3D and self-data "
+            "to only that exercise's sequences and re-indexes the label space "
+            "to a local one (5 classes for SQUAT, 3 for Lunges/Plank)."
+        ),
+    )
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -170,26 +189,46 @@ def main() -> None:
     print(f"device: {device}")
 
     seqs = load_sequences()
+    ex_filter = args.exercise_filter
     train_ds = EC3DSequenceDataset(
         seqs, mode=args.train_split, window=args.window,
         feature_mode=args.feature_mode, mirror=args.mirror,
+        exercise_filter=ex_filter,
     )
-    val_ds = EC3DSequenceDataset(seqs, mode="val", window=args.window, feature_mode=args.feature_mode)
-    test_ds = EC3DSequenceDataset(seqs, mode="test", window=args.window, feature_mode=args.feature_mode)
+    val_ds = EC3DSequenceDataset(
+        seqs, mode="val", window=args.window,
+        feature_mode=args.feature_mode, exercise_filter=ex_filter,
+    )
+    test_ds = EC3DSequenceDataset(
+        seqs, mode="test", window=args.window,
+        feature_mode=args.feature_mode, exercise_filter=ex_filter,
+    )
 
     if args.include_self_data:
         from torch.utils.data import ConcatDataset
         from self_data import SelfRecordedDataset
-        self_ds = SelfRecordedDataset(window=args.window, feature_mode=args.feature_mode)
+        self_ds = SelfRecordedDataset(
+            window=args.window, feature_mode=args.feature_mode,
+            exercise_filter=ex_filter,
+        )
         print(self_ds.summary())
         if len(self_ds) > 0:
             train_ds = ConcatDataset([train_ds, self_ds])
     print(f"feature mode: {args.feature_mode} (dim={feature_dim(args.feature_mode)})  mirror={args.mirror}")
     print(f"train split  : {args.train_split}")
+    if ex_filter:
+        print(f"exercise     : {ex_filter} (local classes: {local_labels_for_exercise(ex_filter)})")
     print(f"clips        : train={len(train_ds)} val={len(val_ds)} test={len(test_ds)}")
 
-    squat_extra_id = MISTAKE_LABELS.index("SQUAT/squat_extra")
-    n_classes = len(MISTAKE_LABELS)
+    if ex_filter:
+        label_space = local_labels_for_exercise(ex_filter)
+        n_classes = len(label_space)
+        exclude_set: set[int] = set()
+    else:
+        label_space = list(MISTAKE_LABELS)
+        n_classes = len(label_space)
+        squat_extra_id = MISTAKE_LABELS.index("SQUAT/squat_extra")
+        exclude_set = {squat_extra_id}
     # Combine .samples across ConcatDataset children for class-weight counting.
     if hasattr(train_ds, "samples"):
         all_samples = train_ds.samples
@@ -198,7 +237,7 @@ def main() -> None:
         for sub in getattr(train_ds, "datasets", [train_ds]):
             all_samples.extend(getattr(sub, "samples", []))
     weights = class_weights(
-        all_samples, n_classes, exclude={squat_extra_id}, beta=args.class_weight_beta
+        all_samples, n_classes, exclude=exclude_set, beta=args.class_weight_beta
     ).to(device)
 
     train_loader = DataLoader(train_ds, batch_size=args.batch, shuffle=True)
@@ -297,9 +336,15 @@ def main() -> None:
         print(f"\nbest val macro-F1: {best_val_f1:.3f}  ({best_path.name})")
         ckpt = torch.load(best_path, map_location=device, weights_only=True)
         model.load_state_dict(ckpt["state_dict"])
-        per_class_report(model, val_loader, device, header="val (Vidit) at best epoch")
+        per_class_report(
+            model, val_loader, device,
+            header="val (Vidit) at best epoch", labels=label_space,
+        )
 
-    per_class_report(model, test_loader, device, header="TEST (Isinsu)")
+    per_class_report(
+        model, test_loader, device,
+        header="TEST (Isinsu)", labels=label_space,
+    )
 
 
 if __name__ == "__main__":

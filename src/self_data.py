@@ -15,7 +15,13 @@ import torch
 from torch.utils.data import Dataset
 
 from blazepose_to_body25 import normalise_like_ec3d
-from ec3d_dataset import EXERCISE_TO_ID, MISTAKE_LABELS, extract_features
+from ec3d_dataset import (
+    EXERCISE_TO_ID,
+    MISTAKE_LABELS,
+    extract_features,
+    global_to_local_id,
+    local_labels_for_exercise,
+)
 
 SAVE_DIR = Path(__file__).resolve().parent.parent / "data" / "self_recorded"
 
@@ -34,10 +40,15 @@ class SelfRecordedDataset(Dataset):
         window: int = 64,
         stride: int | None = None,
         feature_mode: str = "pose_extras",
+        exercise_filter: str | None = None,
     ) -> None:
         self.window = window
         self.stride = stride or window
         self.feature_mode = feature_mode
+        self.exercise_filter = exercise_filter
+        self.local_labels: list[str] | None = (
+            local_labels_for_exercise(exercise_filter) if exercise_filter else None
+        )
         self.samples: list[tuple[np.ndarray, int, int]] = []
         self._counts: dict[str, int] = {}
 
@@ -46,8 +57,17 @@ class SelfRecordedDataset(Dataset):
             if label not in MISTAKE_LABELS:
                 print(f"[self_data] WARN: unknown label {label!r}, skipping")
                 continue
-            mis_id = MISTAKE_LABELS.index(label)
             exercise = label.split("/", 1)[0]
+            if exercise_filter is not None and exercise != exercise_filter:
+                continue
+            global_mis_id = MISTAKE_LABELS.index(label)
+            if exercise_filter is not None:
+                local_id = global_to_local_id(exercise_filter, global_mis_id)
+                if local_id is None:
+                    continue
+                mis_id = local_id
+            else:
+                mis_id = global_mis_id
             ex_id = EXERCISE_TO_ID[exercise]
             frames: np.ndarray = entry["frames_body25"].astype(np.float32)
 

@@ -160,6 +160,9 @@ class BarsPanel(QWidget):
 
         self._rows: dict[str, _Row] = {}
         self._section_headers: dict[str, QLabel] = {}
+        self._section_dividers: dict[str, QFrame] = {}
+        self._section_row_widgets: dict[str, list[QWidget]] = {ex: [] for ex in EXERCISES}
+        self._mode: str | None = None
 
         for i, exercise in enumerate(EXERCISES):
             if i > 0:
@@ -173,6 +176,7 @@ class BarsPanel(QWidget):
                     QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
                 )
                 outer.addWidget(divider)
+                self._section_dividers[exercise] = divider
 
             section_header = QLabel(exercise.upper())
             section_header.setStyleSheet(
@@ -189,7 +193,9 @@ class BarsPanel(QWidget):
                 idx = DISPLAY_CLASSES.index(class_name)
                 error_name = class_name.split("/", 1)[1]
 
-                row_layout = QHBoxLayout()
+                row_container = QWidget()
+                row_container.setStyleSheet("background: transparent; border: none;")
+                row_layout = QHBoxLayout(row_container)
                 row_layout.setContentsMargins(0, 0, 0, 0)
                 row_layout.setSpacing(10)
 
@@ -223,7 +229,8 @@ class BarsPanel(QWidget):
                 row_layout.addWidget(bar, 1)
                 row_layout.addWidget(value, 0)
 
-                outer.addLayout(row_layout)
+                outer.addWidget(row_container)
+                self._section_row_widgets[exercise].append(row_container)
 
                 self._rows[class_name] = _Row(
                     label_widget=label,
@@ -235,47 +242,77 @@ class BarsPanel(QWidget):
 
         outer.addStretch(1)
 
+    # ------------------------------------------------------------------ mode
+    def set_mode(self, exercise: str | None) -> None:
+        """Called by MainWindow. In per-exercise mode we hide the other
+        exercises' rows entirely (per the branch's spec — no dimmed
+        sections, just don't render them)."""
+        self._mode = exercise
+        for ex in EXERCISES:
+            visible = (exercise is None) or (ex == exercise)
+            for widget in self._section_row_widgets[ex]:
+                widget.setVisible(visible)
+            header = self._section_headers.get(ex)
+            if header is not None:
+                header.setVisible(visible)
+                header.setText(ex.upper())
+            divider = self._section_dividers.get(ex)
+            if divider is not None:
+                # Only keep dividers between consecutive VISIBLE sections.
+                # In per-exercise mode we always hide dividers because we're
+                # showing exactly one section.
+                divider.setVisible(exercise is None)
+
+        # Reset row visuals to a neutral state when swapping modes.
+        for row in self._rows.values():
+            row.bar.set_state(0.0, is_top=False, is_correct_top=False, is_active_section=True)
+            row.value_widget.setText("0.00")
+
     # ------------------------------------------------------------------ slots
     @pyqtSlot(object)
     def set_prediction(self, pred: Prediction) -> None:
         probs = pred.probs
         top_label = pred.label
         is_correct = pred.is_correct
-        gated = pred.gated_exercise
+        # In per-exercise mode the "active section" is always the user pick;
+        # the gate is irrelevant.
+        if self._mode is not None:
+            active = self._mode
+        else:
+            active = pred.gated_exercise
+            if getattr(pred, "is_uncertain", False):
+                active = "__none__"
         gate_probs = pred.gate_probs
-        # When the gate is uncertain, treat *no* section as active so nothing
-        # is highlighted — bars just show raw model probabilities, dim.
-        if getattr(pred, "is_uncertain", False):
-            gated = "__none__"
 
-        # Section headers: append gate confidence and highlight the active one.
-        for j, ex in enumerate(EXERCISES):
-            header = self._section_headers.get(ex)
-            if header is None:
-                continue
-            gate_pct = int(round(float(gate_probs[j]) * 100))
-            header.setText(f"{ex.upper()}    {gate_pct}%")
-            if ex == gated:
-                header.setStyleSheet(
-                    f"color: {COLOR_TEXT_PRIMARY};"
-                    "font-size: 10pt;"
-                    "font-weight: 600;"
-                    "background: transparent;"
-                    "border: none;"
-                )
-            else:
-                header.setStyleSheet(
-                    f"color: {COLOR_TEXT_DIM};"
-                    "font-size: 10pt;"
-                    "font-weight: 600;"
-                    "background: transparent;"
-                    "border: none;"
-                )
+        # Section headers — only meaningful in legacy gate mode.
+        if self._mode is None:
+            for j, ex in enumerate(EXERCISES):
+                header = self._section_headers.get(ex)
+                if header is None:
+                    continue
+                gate_pct = int(round(float(gate_probs[j]) * 100))
+                header.setText(f"{ex.upper()}    {gate_pct}%")
+                if ex == active:
+                    header.setStyleSheet(
+                        f"color: {COLOR_TEXT_PRIMARY};"
+                        "font-size: 10pt;"
+                        "font-weight: 600;"
+                        "background: transparent;"
+                        "border: none;"
+                    )
+                else:
+                    header.setStyleSheet(
+                        f"color: {COLOR_TEXT_DIM};"
+                        "font-size: 10pt;"
+                        "font-weight: 600;"
+                        "background: transparent;"
+                        "border: none;"
+                    )
 
         for class_name, row in self._rows.items():
             p = float(probs[row.index])
             is_top = class_name == top_label
-            is_active = row.exercise == gated
+            is_active = row.exercise == active
             row.bar.set_state(p, is_top, is_correct, is_active_section=is_active)
             row.value_widget.setText(f"{p:.2f}")
 

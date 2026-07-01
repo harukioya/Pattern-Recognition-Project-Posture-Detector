@@ -35,26 +35,30 @@ CORRECT_CLASSES: frozenset[str] = frozenset(
 class Prediction:
     """One inference result, suitable for cross-thread signal payload.
 
-    With the exercise-gate enabled, `label` is the top class *within the
-    gated exercise*. `gated_exercise` is the gate's argmax; `gate_probs`
-    is the 3-class softmax over EXERCISES.
+    In gate mode, `label` is the top class within the gate's argmax; in
+    per-exercise mode (`selected_mode` set), `label` is the top class
+    within the user-selected exercise and the gate is bypassed entirely.
 
-    `is_uncertain` is True when the gate isn't confident enough to commit
-    to an exercise (or when no real motion is detected). The UI should
-    display a neutral state instead of a verdict in that case.
+    `gated_exercise` always reflects the exercise the UI should render
+    around (= gate argmax in gate mode, = selected_mode otherwise).
+
+    `is_uncertain` is True when the classifier isn't confident enough
+    or no real motion is detected. The UI should display a neutral
+    state instead of a verdict in that case.
     """
-    label: str               # e.g. "SQUAT/knees_inward" (within gated exercise)
+    label: str               # e.g. "SQUAT/knees_inward" (within active exercise)
     confidence: float        # in [0, 1] — confidence of `label`
     probs: np.ndarray        # shape (len(DISPLAY_CLASSES),), float32
     is_correct: bool
     gated_exercise: str      # "SQUAT" | "Lunges" | "Plank"
-    gate_probs: np.ndarray   # shape (3,), float32, gate softmax
+    gate_probs: np.ndarray   # shape (3,), float32; all-zeros in per-exercise mode
     is_uncertain: bool = False
+    selected_mode: str | None = None  # None = gate mode; else the chosen exercise
 
     @property
     def exercise(self) -> str:
-        # The displayed exercise = the gate's pick.
-        return self.gated_exercise
+        # The displayed exercise = user pick if in per-exercise mode, else the gate.
+        return self.selected_mode or self.gated_exercise
 
     @property
     def error_name(self) -> str:
