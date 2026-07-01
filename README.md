@@ -191,21 +191,6 @@ Press `Q` to quit.
 
 ---
 
-## Honest caveats
-
-- The EC3D training data is small (287 trainval clips, 4 subjects) and clean
-  (4-camera triangulated 3D), while live MediaPipe input is single-camera
-  noisy 2.5D. There is a real **domain gap** that fine-tuning with self-data
-  helps with but does not eliminate.
-- The hardest class for the deep model is `Lunges/knee_passes_toe`, especially
-  in live view; the gate sometimes mistakes a standing pose for a lunge
-  because of MediaPipe's noisy z-axis.
-- For the most reliable demo, consider augmenting the deep model with a
-  rule-based joint-angle analyzer at inference time. See `SESSION_HANDOFF.md`
-  for the discussion.
-
----
-
 ## Repository layout
 
 ```
