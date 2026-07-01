@@ -54,6 +54,37 @@ EXERCISE_TO_ID = {e: i for i, e in enumerate(EXERCISES)}
 MISTAKE_LABELS: list[str] = [f"{ex}/{m}" for (ex, _code), (_e, m) in LABEL_MAP.items()]
 MISTAKE_TO_ID = {lab: i for i, lab in enumerate(MISTAKE_LABELS)}
 
+# Per-exercise class spaces used by the experiment/per-exercise-modes branch.
+# SQUAT drops squat_extra so the specialist model has 5 outputs; Lunges and
+# Plank keep all 3 of their labelled classes.
+_EXCLUDED_FROM_LOCAL: frozenset[str] = frozenset({"SQUAT/squat_extra"})
+
+
+def local_labels_for_exercise(exercise: str) -> list[str]:
+    """Mistake labels for one exercise in per-exercise-mode ordering."""
+    if exercise not in EXERCISES:
+        raise ValueError(f"unknown exercise: {exercise}")
+    return [
+        lab for lab in MISTAKE_LABELS
+        if lab.startswith(exercise + "/") and lab not in _EXCLUDED_FROM_LOCAL
+    ]
+
+
+def global_to_local_id(exercise: str, global_id: int) -> int | None:
+    """Map global 12-class id -> local id within one exercise. Returns None if the
+    class doesn't belong to `exercise` or is excluded (e.g. SQUAT/squat_extra)."""
+    label = MISTAKE_LABELS[global_id]
+    locals_ = local_labels_for_exercise(exercise)
+    if label not in locals_:
+        return None
+    return locals_.index(label)
+
+
+def local_to_global_id(exercise: str, local_id: int) -> int:
+    """Map local id (within one exercise) back to the global 12-class id."""
+    label = local_labels_for_exercise(exercise)[local_id]
+    return MISTAKE_TO_ID[label]
+
 
 @dataclass
 class Sequence:
@@ -361,6 +392,7 @@ class EC3DSequenceDataset(Dataset):
         stride: int | None = None,
         feature_mode: str = "angles",
         mirror: bool = False,
+        exercise_filter: str | None = None,
     ) -> None:
         assert mode in {"train", "val", "test", "trainval"}
         keep = {
@@ -374,14 +406,29 @@ class EC3DSequenceDataset(Dataset):
         self.feature_mode = feature_mode
         self.n_features = feature_dim(feature_mode)
         self.mirror = mirror
+        self.exercise_filter = exercise_filter
+        self.local_labels: list[str] | None = (
+            local_labels_for_exercise(exercise_filter) if exercise_filter else None
+        )
 
         self.samples: list[tuple[np.ndarray, int, int]] = []
         for s in sequences:
             if s.subject not in keep:
                 continue
-            self._add_sequence(s.frames, s.exercise_id, s.mistake_id)
+            if exercise_filter is not None:
+                if s.exercise != exercise_filter:
+                    continue
+                local_id = global_to_local_id(exercise_filter, s.mistake_id)
+                if local_id is None:
+                    continue  # skip SQUAT/squat_extra when filtering to SQUAT
+                mis_id_to_store = local_id
+            else:
+                mis_id_to_store = s.mistake_id
+            self._add_sequence(s.frames, s.exercise_id, mis_id_to_store)
             if mirror:
-                self._add_sequence(mirror_frames(s.frames), s.exercise_id, s.mistake_id)
+                self._add_sequence(
+                    mirror_frames(s.frames), s.exercise_id, mis_id_to_store
+                )
 
     def _add_sequence(self, raw_frames: np.ndarray, ex_id: int, mis_id: int) -> None:
         T = raw_frames.shape[0]

@@ -1,7 +1,9 @@
 """MainWindow — the Posture Coach desktop app.
 
-Lays out the camera on the left and a stacked column of panels on the right.
-Owns the pipeline + coach threads.
+On the experiment/per-exercise-modes branch the main window swaps between
+a WelcomeScreen (mode picker) and the workout view via QStackedWidget.
+The PipelineThread is created lazily on mode selection so we only pay
+model-loading cost when the user actually starts a session.
 """
 from __future__ import annotations
 
@@ -11,18 +13,21 @@ from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QMainWindow,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from app.coach_thread import CoachThread
 from app.pipeline_thread import PipelineThread
+from app.state import EXERCISES
 from app.widgets.bars_panel import BarsPanel
 from app.widgets.camera_widget import CameraWidget
 from app.widgets.coach_panel import CoachPanel
 from app.widgets.header_bar import HeaderBar
 from app.widgets.status_bar import AppStatusBar
 from app.widgets.verdict_panel import VerdictPanel
+from app.widgets.welcome_screen import WelcomeScreen
 
 APP_DIR = Path(__file__).resolve().parent
 STYLE_PATH = APP_DIR / "style.qss"
@@ -35,16 +40,19 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Posture Coach")
         self.resize(QSize(1400, 900))
 
-        # Central layout: camera | panels
-        central = QWidget(self)
-        central.setObjectName("MainWindow")
-        h = QHBoxLayout(central)
-        h.setContentsMargins(16, 16, 16, 12)
-        h.setSpacing(16)
+        self.header = HeaderBar(self)
+        self.status = AppStatusBar(self)
+
+        # Workout page — camera on the left, panels on the right.
+        workout = QWidget(self)
+        workout.setObjectName("WorkoutPage")
+        wh = QHBoxLayout(workout)
+        wh.setContentsMargins(16, 16, 16, 12)
+        wh.setSpacing(16)
 
         self.camera = CameraWidget(self)
         self.camera.setMinimumSize(720, 540)
-        h.addWidget(self.camera, stretch=7)
+        wh.addWidget(self.camera, stretch=7)
 
         right_col = QVBoxLayout()
         right_col.setSpacing(12)
@@ -54,15 +62,21 @@ class MainWindow(QMainWindow):
         right_col.addWidget(self.verdict, stretch=2)
         right_col.addWidget(self.bars, stretch=5)
         right_col.addWidget(self.coach, stretch=2)
-        h.addLayout(right_col, stretch=3)
+        wh.addLayout(right_col, stretch=3)
+
+        # Landing page — three exercise cards.
+        self.welcome = WelcomeScreen(self)
+        self.welcome.mode_selected.connect(self._on_mode_selected)
+
+        self.stack = QStackedWidget(self)
+        self.stack.addWidget(self.welcome)   # index 0
+        self.stack.addWidget(workout)        # index 1
 
         outer = QVBoxLayout()
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
-        self.header = HeaderBar(self)
         outer.addWidget(self.header, stretch=0)
-        outer.addWidget(central, stretch=1)
-        self.status = AppStatusBar(self)
+        outer.addWidget(self.stack, stretch=1)
         outer.addWidget(self.status, stretch=0)
 
         wrapper = QWidget(self)
@@ -70,11 +84,31 @@ class MainWindow(QMainWindow):
         wrapper.setLayout(outer)
         self.setCentralWidget(wrapper)
 
-        # Threads
-        self.pipeline = PipelineThread(parent=self)
+        # Coach thread runs the whole time; pipeline is created per mode.
         self.coach_thread = CoachThread(parent=self)
+        self.coach_thread.cue_ready.connect(self.coach.set_cue)
+        self.coach_thread.start()
 
-        # Wire signals
+        self.pipeline: PipelineThread | None = None
+
+        # Stylesheet
+        if STYLE_PATH.exists():
+            self.setStyleSheet(STYLE_PATH.read_text())
+
+        self._go_home()
+
+    # ------------------------------------------------------------------ modes
+    def _on_mode_selected(self, exercise: str) -> None:
+        if exercise not in EXERCISES:
+            return
+        self._teardown_pipeline()
+        self.header.set_mode(exercise)
+        self.bars.set_mode(exercise)
+        self.verdict.reset_for_mode(exercise)
+        self.coach.reset()
+        self.status.set_buffer(0)
+
+        self.pipeline = PipelineThread(mode=exercise, parent=self)
         self.pipeline.frame_ready.connect(self.camera.set_frame)
         self.pipeline.prediction_updated.connect(self.header.set_prediction)
         self.pipeline.prediction_updated.connect(self.verdict.set_prediction)
@@ -83,24 +117,51 @@ class MainWindow(QMainWindow):
         self.pipeline.fps_updated.connect(self.status.set_fps)
         self.pipeline.buffer_updated.connect(self.status.set_buffer)
         self.pipeline.coach_should_request.connect(self.coach_thread.request_cue)
-        self.coach_thread.cue_ready.connect(self.coach.set_cue)
-
-        # Stylesheet
-        if STYLE_PATH.exists():
-            self.setStyleSheet(STYLE_PATH.read_text())
-
-        # Start workers
-        self.coach_thread.start()
         self.pipeline.start()
 
+        self.stack.setCurrentIndex(1)
+
+    def _teardown_pipeline(self) -> None:
+        if self.pipeline is None:
+            return
+        self.pipeline.stop()
+        self.pipeline.wait(2000)
+        self.pipeline = None
+
+    def _go_home(self) -> None:
+        self._teardown_pipeline()
+        self.header.set_mode(None)
+        self.bars.set_mode(None)
+        self.verdict.reset_for_mode(None)
+        self.coach.reset()
+        self.stack.setCurrentIndex(0)
+
+    # ------------------------------------------------------------------ keys
     def keyPressEvent(self, ev) -> None:  # noqa: N802
-        if ev.key() == Qt.Key.Key_Q:
+        key = ev.key()
+        if key == Qt.Key.Key_Q:
             self.close()
+            return
+        if self.stack.currentIndex() == 0:
+            # Welcome hotkeys — S / L / P jump straight to a mode.
+            if key == Qt.Key.Key_S:
+                self._on_mode_selected("SQUAT")
+                return
+            if key == Qt.Key.Key_L:
+                self._on_mode_selected("Lunges")
+                return
+            if key == Qt.Key.Key_P:
+                self._on_mode_selected("Plank")
+                return
+        else:
+            # Workout hotkeys — H / Home / Escape returns to welcome.
+            if key in (Qt.Key.Key_H, Qt.Key.Key_Home, Qt.Key.Key_Escape):
+                self._go_home()
+                return
         super().keyPressEvent(ev)
 
     def closeEvent(self, ev) -> None:  # noqa: N802
-        self.pipeline.stop()
+        self._teardown_pipeline()
         self.coach_thread.stop()
-        self.pipeline.wait(2000)
         self.coach_thread.wait(2000)
         super().closeEvent(ev)

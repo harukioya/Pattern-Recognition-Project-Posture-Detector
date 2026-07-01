@@ -1,4 +1,8 @@
-"""QThread that owns the webcam, MediaPipe, and the ensemble model.
+"""QThread that owns the webcam, MediaPipe, and a per-exercise ensemble.
+
+On the experiment/per-exercise-modes branch the exercise-gate is skipped
+entirely: the thread is constructed with a fixed `mode` (SQUAT / Lunges /
+Plank) and only loads that exercise's specialist ensemble.
 
 Emits Qt signals so widgets in the GUI thread can render without ever
 blocking on inference or video I/O.
@@ -23,7 +27,11 @@ import sys
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from blazepose_to_body25 import blazepose_to_body25, normalise_like_ec3d
-from ec3d_dataset import MISTAKE_LABELS, extract_features, feature_dim
+from ec3d_dataset import (
+    extract_features,
+    feature_dim,
+    local_labels_for_exercise,
+)
 from ensemble_eval import build_model
 
 from app.state import (
@@ -31,7 +39,6 @@ from app.state import (
     DISPLAY_CLASSES,
     EXERCISES,
     Prediction,
-    indices_for_exercise,
 )
 
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -45,23 +52,13 @@ CKPT_DIR = ROOT / "checkpoints"
 WINDOW = 64
 PRED_EVERY = 4
 
-DEFAULT_CKPTS = [
-    # Fine-tuned Hybrid ensemble — trained on EC3D trainval + ~44 self-recorded
-    # MediaPipe clips so the model has seen real MediaPipe noise. Per-seed
-    # EC3D-test F1: 0.814 / 0.736 / 0.816 / 0.776.
-    "bilstm_ec3d_best_ft_s0.pt",
-    "bilstm_ec3d_best_ft_s1.pt",
-    "bilstm_ec3d_best_ft_s2.pt",
-    "bilstm_ec3d_best_ft_s3.pt",
-]
-
-# 3-class exercise-gate ensemble (also fine-tuned with self-data).
-DEFAULT_GATE_CKPTS = [
-    "gate_hybrid_tv_ft_s0.pt",
-    "gate_hybrid_tv_ft_s1.pt",
-    "gate_hybrid_tv_ft_s2.pt",
-    "gate_hybrid_tv_ft_s3.pt",
-]
+# Per-exercise ensembles. 4 seeds each, trained via train.py with
+# --exercise-filter <ex> --ckpt-tag pex_<ex>_s<seed>.
+PEX_CKPTS: dict[str, list[str]] = {
+    "SQUAT": [f"bilstm_ec3d_best_pex_squat_s{s}.pt" for s in range(4)],
+    "Lunges": [f"bilstm_ec3d_best_pex_lunges_s{s}.pt" for s in range(4)],
+    "Plank": [f"bilstm_ec3d_best_pex_plank_s{s}.pt" for s in range(4)],
+}
 
 
 def _pick_device() -> torch.device:
@@ -70,28 +67,30 @@ def _pick_device() -> torch.device:
     return torch.device("cpu")
 
 
-def _probs_from_full(p_full: np.ndarray) -> np.ndarray:
-    """Project 12-class probs down to the 11 we display (drop squat_extra),
-    re-normalise so the displayed values still sum to 1.
-    """
-    keep_idx = [MISTAKE_LABELS.index(c) for c in DISPLAY_CLASSES]
-    sub = p_full[keep_idx]
-    s = sub.sum()
-    return sub / (s if s > 0 else 1.0)
+def _local_probs_to_display(
+    local_probs: np.ndarray, exercise: str
+) -> np.ndarray:
+    """Scatter a (k,) local-probability vector into a (11,) DISPLAY_CLASSES
+    vector, leaving other-exercise slots at zero."""
+    out = np.zeros(len(DISPLAY_CLASSES), dtype=np.float32)
+    for local_id, label in enumerate(local_labels_for_exercise(exercise)):
+        if label in DISPLAY_CLASSES:
+            out[DISPLAY_CLASSES.index(label)] = float(local_probs[local_id])
+    return out
 
 
 class PipelineThread(QThread):
-    """Owns camera + pose model + ensemble.
+    """Owns camera + pose model + per-exercise ensemble.
 
     Signals
     -------
     frame_ready(QImage, object)
-        Raw RGB camera frame as a QImage, and a list of
-        (x_norm, y_norm) landmark tuples (one per BlazePose joint) for the
-        widget to draw the skeleton. `object` is a Python list, not a Qt type.
+        Raw RGB camera frame as a QImage, and a list of (x_norm, y_norm)
+        landmark tuples (one per BlazePose joint) for the widget to draw
+        the skeleton. `object` is a Python list, not a Qt type.
 
     prediction_updated(Prediction)
-        Latest model prediction (with display-class probs).
+        Latest model prediction, scattered into the 11-class display space.
 
     fps_updated(float)
         FPS measured over the last ~1 second.
@@ -100,8 +99,8 @@ class PipelineThread(QThread):
         Current pose-buffer fill 0..WINDOW.
 
     coach_should_request(str, float)
-        Convenience: fired when we think the coach should ask Ollama
-        (incorrect class, confident enough, throttled).
+        Fired when we think the coach should ask Ollama (incorrect class,
+        confident enough, throttled).
     """
 
     frame_ready = pyqtSignal(QImage, object)
@@ -112,15 +111,15 @@ class PipelineThread(QThread):
 
     def __init__(
         self,
-        ckpts: list[str] | None = None,
-        gate_ckpts: list[str] | None = None,
+        mode: str,
         camera_index: int = 0,
         coach_interval_s: float = 4.0,
         parent=None,
     ) -> None:
         super().__init__(parent)
-        self.ckpts = ckpts or DEFAULT_CKPTS
-        self.gate_ckpts = gate_ckpts if gate_ckpts is not None else DEFAULT_GATE_CKPTS
+        if mode not in EXERCISES:
+            raise ValueError(f"unknown mode: {mode}; expected one of {EXERCISES}")
+        self.mode = mode
         self.camera_index = camera_index
         self.coach_interval_s = coach_interval_s
         self._running = True
@@ -130,33 +129,32 @@ class PipelineThread(QThread):
 
     def run(self) -> None:
         device = _pick_device()
-        n_classes = len(MISTAKE_LABELS)
+        local_labels = local_labels_for_exercise(self.mode)
+        n_local = len(local_labels)
+
         models, args_list = [], []
-        for name in self.ckpts:
-            ckpt = torch.load(CKPT_DIR / name, map_location=device, weights_only=True)
-            m = build_model(ckpt["args"], n_classes, device)
+        for name in PEX_CKPTS[self.mode]:
+            path = CKPT_DIR / name
+            if not path.exists():
+                print(f"[pipeline] WARN: missing checkpoint {name}, skipping")
+                continue
+            ckpt = torch.load(path, map_location=device, weights_only=True)
+            m = build_model(ckpt["args"], n_local, device)
             m.load_state_dict(ckpt["state_dict"])
             m.eval()
             models.append(m)
             args_list.append(ckpt["args"])
+
+        if not models:
+            print(
+                f"[pipeline] ERROR: no {self.mode} checkpoints found in {CKPT_DIR}. "
+                "Train them via `python src/train.py --exercise-filter "
+                f"{self.mode} --ckpt-tag pex_{self.mode.lower()}_sN ...`."
+            )
+            return
         feature_mode = args_list[0]["feature_mode"]
         _ = feature_dim(feature_mode)  # validate
-
-        # Exercise gate (3-class). Optional — falls back if checkpoints missing.
-        gate_models = []
-        for name in self.gate_ckpts:
-            path = CKPT_DIR / name
-            if not path.exists():
-                continue
-            ckpt = torch.load(path, map_location=device, weights_only=True)
-            m = build_model(ckpt["args"], len(EXERCISES), device)
-            m.load_state_dict(ckpt["state_dict"])
-            m.eval()
-            gate_models.append(m)
-        print(f"[pipeline] gate ensemble: {len(gate_models)} models")
-
-        # Precompute per-exercise index slices for fast routing
-        ex_index_slices = {ex: indices_for_exercise(ex) for ex in EXERCISES}
+        print(f"[pipeline] mode={self.mode}  ensemble={len(models)} models  classes={local_labels}")
 
         cap = cv2.VideoCapture(self.camera_index)
         if not cap.isOpened():
@@ -175,7 +173,7 @@ class PipelineThread(QThread):
         start_time = time.time()
         fps_t0 = time.time()
         fps_frames = 0
-        last_probs: np.ndarray | None = None
+        last_probs: np.ndarray | None = None  # smoothed local probs
         last_label = ""
         last_coach_t = 0.0
         frame_count = 0
@@ -214,52 +212,31 @@ class PipelineThread(QThread):
                         for m in models:
                             p = torch.softmax(m(x), dim=-1).cpu().numpy()[0]
                             probs_sum = p if probs_sum is None else probs_sum + p
-                        full_probs = probs_sum / len(models)
+                        local_probs = probs_sum / len(models)
 
-                        # ---- Exercise gate ----
-                        if gate_models:
-                            gate_sum = None
-                            for gm in gate_models:
-                                gp = torch.softmax(gm(x), dim=-1).cpu().numpy()[0]
-                                gate_sum = gp if gate_sum is None else gate_sum + gp
-                            gate_probs = gate_sum / len(gate_models)
-                        else:
-                            # Fall back: aggregate per-error probs into 3 buckets
-                            tmp = _probs_from_full(full_probs)
-                            gate_probs = np.array([
-                                tmp[ex_index_slices[ex]].sum() for ex in EXERCISES
-                            ], dtype=np.float32)
-
-                    display_probs = _probs_from_full(full_probs)
                     if last_probs is None:
-                        last_probs = display_probs
+                        last_probs = local_probs
                     else:
-                        last_probs = 0.6 * last_probs + 0.4 * display_probs
+                        last_probs = 0.6 * last_probs + 0.4 * local_probs
 
-                    # Determine gated exercise + top class within it
-                    gated_ex_idx = int(np.argmax(gate_probs))
-                    gated_ex = EXERCISES[gated_ex_idx]
-                    in_ex = ex_index_slices[gated_ex]
-                    sub_probs = last_probs[in_ex]
-                    sub_top = int(np.argmax(sub_probs))
-                    top_label = DISPLAY_CLASSES[in_ex[sub_top]]
+                    top_idx = int(np.argmax(last_probs))
+                    top_label = local_labels[top_idx]
 
-                    # Uncertainty: gate not confident, OR person not moving
-                    gate_max = float(gate_probs.max())
-                    # Pose movement = variance of joint positions across the buffer
-                    # summed over joints + axes. Static pose -> very low value.
+                    # Person-not-moving heuristic — same as gate-mode pipeline.
                     seq_var = float(np.mean(np.var(seq, axis=0)))
-                    is_uncertain = (gate_max < 0.55) or (seq_var < 0.0008)
+                    is_uncertain = seq_var < 0.0008
 
+                    display_probs = _local_probs_to_display(last_probs, self.mode)
                     last_label = top_label
                     pred = Prediction(
                         label=last_label,
-                        confidence=float(sub_probs[sub_top]),
-                        probs=last_probs.copy(),
+                        confidence=float(last_probs[top_idx]),
+                        probs=display_probs,
                         is_correct=last_label in CORRECT_CLASSES,
-                        gated_exercise=gated_ex,
-                        gate_probs=gate_probs.astype(np.float32),
+                        gated_exercise=self.mode,
+                        gate_probs=np.zeros(len(EXERCISES), dtype=np.float32),
                         is_uncertain=is_uncertain,
+                        selected_mode=self.mode,
                     )
                     self.prediction_updated.emit(pred)
 

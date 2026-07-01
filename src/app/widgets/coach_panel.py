@@ -155,6 +155,15 @@ class CoachPanel(QWidget):
         self._latest_cue_text = cue_text
         self._refresh()
 
+    def reset(self) -> None:
+        """Called by MainWindow on welcome/mode-select transitions."""
+        self._current_label = ""
+        self._current_is_correct = False
+        self._has_prediction = False
+        self._latest_cue_for = ""
+        self._latest_cue_text = ""
+        self._refresh()
+
     # -------------------------------------------------------------- internal
     def _refresh(self) -> None:
         """Recompute dot colour and body text from internal state."""
