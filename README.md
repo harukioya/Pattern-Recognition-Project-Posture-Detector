@@ -2,6 +2,8 @@
 
 Final project for the **Pattern Recognition** graduate class (Waseda Spring 2026).
 
+**Team**: Haruki Oyama, Shuma Kise, Jina Lee.
+
 Trains a deep model on the EC3D 3D-pose dataset, then deploys it as a live PyQt
 desktop app driven by MediaPipe pose estimation, with optional Ollama-backed
 natural-language coaching.
