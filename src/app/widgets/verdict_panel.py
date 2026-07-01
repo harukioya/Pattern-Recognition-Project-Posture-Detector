@@ -109,6 +109,30 @@ class VerdictPanel(QWidget):
         outer.addStretch(1)
         outer.addWidget(self._underline)
 
+    # ------------------------------------------------------------------ mode
+    def reset_for_mode(self, exercise: str | None) -> None:
+        """Called by MainWindow on welcome/mode-select transitions."""
+        if exercise is None:
+            self._exercise.setText("READY")
+            self._verdict.setText("Pick an exercise to start")
+        else:
+            display = exercise if exercise == "Lunges" else exercise.capitalize()
+            self._exercise.setText(display.upper())
+            self._verdict.setText("Stand back so your full body fits in view")
+        self._verdict.setStyleSheet(
+            f"color: {COLOR_TEXT_SECOND};"
+            "font-size: 24pt;"
+            "font-weight: 500;"
+            "background: transparent;"
+            "border: none;"
+        )
+        self._confidence.setText("")
+        self._underline.setStyleSheet(
+            f"background-color: {COLOR_BORDER};"
+            "border: none;"
+            "border-radius: 1px;"
+        )
+
     # ------------------------------------------------------------------ slots
     @pyqtSlot(object)
     def set_prediction(self, pred: Prediction) -> None:

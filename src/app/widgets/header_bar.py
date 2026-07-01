@@ -45,6 +45,11 @@ class HeaderBar(QWidget):
         layout.addWidget(self._exercise, 1)
         layout.addWidget(self._right, 0)
 
+        # Track the active per-exercise mode. When set, prediction updates
+        # keep the header pinned to this label instead of following the
+        # (legacy) gate's argmax.
+        self._mode: str | None = None
+
         self.setStyleSheet(
             f"""
             QWidget#HeaderBar {{
@@ -69,10 +74,46 @@ class HeaderBar(QWidget):
             """
         )
 
+    def set_mode(self, exercise: str | None) -> None:
+        """Called by MainWindow on welcome/mode-select transitions.
+
+        `None` -> welcome-screen title; otherwise pin the header to the
+        selected exercise so the user always sees which specialist is
+        active, independent of prediction confidence.
+        """
+        self._mode = exercise
+        if exercise is None:
+            self._exercise.setText("Choose your exercise")
+            self._exercise.setStyleSheet(
+                f"color: {_TEXT_SECOND};"
+                "font-size: 26pt;"
+                "font-weight: 600;"
+                "background: transparent;"
+                "border: none;"
+            )
+            self._right.setText("Posture Coach")
+            return
+        display = exercise if exercise == "Lunges" else exercise.capitalize()
+        self._exercise.setText(display)
+        self._exercise.setStyleSheet(
+            f"color: {_TEXT_PRIMARY};"
+            "font-size: 26pt;"
+            "font-weight: 700;"
+            "background: transparent;"
+            "border: none;"
+        )
+        self._right.setText("H → home    Q → quit")
+
     @pyqtSlot(object)
     def set_prediction(self, pred: Prediction) -> None:
+        # In per-exercise mode the header title stays pinned to the mode.
+        # We only use predictions to shift between "waiting" grey and the
+        # normal white treatment of the mode name.
+        if self._mode is None:
+            return
+        display = self._mode if self._mode == "Lunges" else self._mode.capitalize()
+        self._exercise.setText(display)
         if getattr(pred, "is_uncertain", False):
-            self._exercise.setText("Waiting for a clear pose")
             self._exercise.setStyleSheet(
                 f"color: {_TEXT_SECOND};"
                 "font-size: 26pt;"
@@ -81,10 +122,6 @@ class HeaderBar(QWidget):
                 "border: none;"
             )
             return
-        # Show exercise name in title case (Squat / Lunges / Plank)
-        name = pred.exercise
-        display = name if name == "Lunges" else name.capitalize()
-        self._exercise.setText(display)
         self._exercise.setStyleSheet(
             f"color: {_TEXT_PRIMARY};"
             "font-size: 26pt;"
