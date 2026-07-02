@@ -1,5 +1,6 @@
 mediapipe>=0.10.14
 opencv-python>=4.9.0
+PyQt6>=6.6.0
 torch>=2.2.0
 numpy>=1.26.0
 scikit-learn>=1.4.0

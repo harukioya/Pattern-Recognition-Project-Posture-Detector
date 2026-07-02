@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QSize
 from PyQt6.QtWidgets import (
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QMainWindow,
     QStackedWidget,
@@ -97,6 +98,35 @@ class MainWindow(QMainWindow):
 
         self._go_home()
 
+    # ------------------------------------------------------------------ intro
+    def showEvent(self, ev) -> None:  # noqa: N802
+        super().showEvent(ev)
+        if getattr(self, "_intro_played", False):
+            return
+        self._intro_played = True
+        self.setWindowOpacity(0.0)
+        self._window_fade = QPropertyAnimation(self, b"windowOpacity", self)
+        self._window_fade.setDuration(450)
+        self._window_fade.setStartValue(0.0)
+        self._window_fade.setEndValue(1.0)
+        self._window_fade.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._window_fade.start()
+
+    def _fade_in_page(self, page: QWidget) -> None:
+        """Short fade for the page just made current in the stack."""
+        effect = QGraphicsOpacityEffect(page)
+        effect.setOpacity(0.0)
+        page.setGraphicsEffect(effect)
+        anim = QPropertyAnimation(effect, b"opacity", page)
+        anim.setDuration(240)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        # Remove the effect when done — it costs a composition pass per
+        # frame, which matters on the 30fps camera page.
+        anim.finished.connect(lambda: page.setGraphicsEffect(None))
+        anim.start(QPropertyAnimation.DeletionPolicy.DeleteWhenStopped)
+
     # ------------------------------------------------------------------ modes
     def _on_mode_selected(self, exercise: str) -> None:
         if exercise not in EXERCISES:
@@ -120,6 +150,7 @@ class MainWindow(QMainWindow):
         self.pipeline.start()
 
         self.stack.setCurrentIndex(1)
+        self._fade_in_page(self.stack.currentWidget())
 
     def _teardown_pipeline(self) -> None:
         if self.pipeline is None:

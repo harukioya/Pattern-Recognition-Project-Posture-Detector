@@ -13,7 +13,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import QRectF, Qt, pyqtSignal
+from PyQt6.QtCore import (
+    QEasingCurve,
+    QParallelAnimationGroup,
+    QPoint,
+    QPropertyAnimation,
+    QRectF,
+    QSequentialAnimationGroup,
+    Qt,
+    QTimer,
+    QVariantAnimation,
+    pyqtSignal,
+)
 from PyQt6.QtGui import (
     QColor,
     QLinearGradient,
@@ -24,6 +35,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QSizePolicy,
@@ -68,6 +80,15 @@ _HOTKEYS: dict[str, str] = {
 _CARD_RADIUS = 16.0
 
 
+def _lerp_color(a: QColor, b: QColor, t: float) -> QColor:
+    return QColor(
+        round(a.red() + (b.red() - a.red()) * t),
+        round(a.green() + (b.green() - a.green()) * t),
+        round(a.blue() + (b.blue() - a.blue()) * t),
+        round(a.alpha() + (b.alpha() - a.alpha()) * t),
+    )
+
+
 class ModeCard(QFrame):
     """One clickable card in the welcome screen. Full-bleed exercise photo
     with a bottom gradient scrim for legibility.
@@ -87,6 +108,11 @@ class ModeCard(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
 
         self._hover: bool = False
+        self._hover_t: float = 0.0  # animated 0→1 hover progress
+        self._hover_anim = QVariantAnimation(self)
+        self._hover_anim.setDuration(160)
+        self._hover_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._hover_anim.valueChanged.connect(self._on_hover_tick)
         self._pixmap: QPixmap | None = self._load_pixmap(exercise)
 
         display_name = exercise if exercise == "Lunges" else exercise.capitalize()
@@ -194,12 +220,11 @@ class ModeCard(QFrame):
         gradient.setColorAt(1.0, QColor(14, 17, 23, 235))    # bottom: near opaque
         painter.fillRect(rect, gradient)
 
-        # 4) Hover overlay + border.
-        if self._hover:
-            painter.fillRect(rect, QColor(120, 180, 255, 30))
-            border_color = QColor(_ACCENT)
-        else:
-            border_color = QColor(_BORDER)
+        # 4) Hover overlay + border, blended by animated hover progress.
+        t = self._hover_t
+        if t > 0.0:
+            painter.fillRect(rect, QColor(120, 180, 255, round(30 * t)))
+        border_color = _lerp_color(QColor(_BORDER), QColor(_ACCENT), t)
         pen = painter.pen()
         pen.setColor(border_color)
         pen.setWidth(1)
@@ -209,16 +234,26 @@ class ModeCard(QFrame):
 
         painter.end()
 
+    def _on_hover_tick(self, value) -> None:
+        self._hover_t = float(value)
+        self.update()
+
+    def _animate_hover(self, end: float) -> None:
+        self._hover_anim.stop()
+        self._hover_anim.setStartValue(self._hover_t)
+        self._hover_anim.setEndValue(end)
+        self._hover_anim.start()
+
     def enterEvent(self, event) -> None:  # noqa: N802 (Qt API)
         self._hover = True
         self._apply_label_style()
-        self.update()
+        self._animate_hover(1.0)
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:  # noqa: N802 (Qt API)
         self._hover = False
         self._apply_label_style()
-        self.update()
+        self._animate_hover(0.0)
         super().leaveEvent(event)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802 (Qt API)
@@ -243,7 +278,7 @@ class WelcomeScreen(QWidget):
         outer.setContentsMargins(48, 48, 48, 48)
         outer.setSpacing(24)
 
-        title = QLabel("Choose your exercise")
+        title = self._title = QLabel("Choose your exercise")
         title.setStyleSheet(
             f"color: {_TEXT_PRIMARY};"
             "font-size: 40pt;"
@@ -253,7 +288,7 @@ class WelcomeScreen(QWidget):
         )
         title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
 
-        subtitle = QLabel(
+        subtitle = self._subtitle = QLabel(
             "Per-exercise specialist models — press the hotkey or click a card. "
             "Press H at any time to return here."
         )
@@ -281,6 +316,58 @@ class WelcomeScreen(QWidget):
         outer.addStretch(1)
         outer.addLayout(cards_row, 0)
         outer.addStretch(1)
+
+    # ------------------------------------------------------------------ intro
+    def showEvent(self, event) -> None:  # noqa: N802 (Qt API)
+        super().showEvent(event)
+        # Defer one tick so the layout has settled and card positions are final.
+        QTimer.singleShot(0, self._play_intro)
+
+    def _play_intro(self) -> None:
+        """Staggered fade + rise for the title, subtitle and cards. Plays on
+        every visit to the welcome page (startup and returning home)."""
+        if not self.isVisible():
+            return
+        group = QParallelAnimationGroup(self)
+        targets = [self._title, self._subtitle, *self._cards.values()]
+        effects: list[tuple[QWidget, QGraphicsOpacityEffect]] = []
+        for i, w in enumerate(targets):
+            effect = QGraphicsOpacityEffect(w)
+            effect.setOpacity(0.0)
+            w.setGraphicsEffect(effect)
+            effects.append((w, effect))
+
+            seq = QSequentialAnimationGroup(group)
+            seq.addPause(i * 80)
+
+            step = QParallelAnimationGroup(seq)
+            fade = QPropertyAnimation(effect, b"opacity", step)
+            fade.setDuration(380)
+            fade.setStartValue(0.0)
+            fade.setEndValue(1.0)
+            fade.setEasingCurve(QEasingCurve.Type.OutCubic)
+            step.addAnimation(fade)
+
+            if isinstance(w, ModeCard):
+                end = w.pos()
+                rise = QPropertyAnimation(w, b"pos", step)
+                rise.setDuration(380)
+                rise.setStartValue(end + QPoint(0, 24))
+                rise.setEndValue(end)
+                rise.setEasingCurve(QEasingCurve.Type.OutCubic)
+                step.addAnimation(rise)
+
+            seq.addAnimation(step)
+            group.addAnimation(seq)
+
+        def _cleanup() -> None:
+            # Drop the opacity effects once done — they subtly change
+            # rendering and cost a composition pass per frame.
+            for w, _ in effects:
+                w.setGraphicsEffect(None)
+
+        group.finished.connect(_cleanup)
+        group.start(QParallelAnimationGroup.DeletionPolicy.DeleteWhenStopped)
 
     def _on_card_clicked(self, exercise: str) -> None:
         self.mode_selected.emit(exercise)

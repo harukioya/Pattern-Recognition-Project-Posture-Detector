@@ -9,6 +9,7 @@ blocking on inference or video I/O.
 """
 from __future__ import annotations
 
+import os
 import time
 from collections import deque
 from pathlib import Path
@@ -54,10 +55,15 @@ PRED_EVERY = 4
 
 # Per-exercise ensembles. 4 seeds each, trained via train.py with
 # --exercise-filter <ex> --ckpt-tag pex_<ex>_s<seed>.
+# PEX_VARIANT selects an alternate checkpoint set trained with extra data,
+# e.g. PEX_VARIANT=enriched -> bilstm_ec3d_best_pex_squat_enriched_s0.pt.
+# Empty/unset = baseline (default, unchanged filenames).
+_VARIANT = os.environ.get("PEX_VARIANT", "")
+_SUFFIX = f"_{_VARIANT}" if _VARIANT else ""
 PEX_CKPTS: dict[str, list[str]] = {
-    "SQUAT": [f"bilstm_ec3d_best_pex_squat_s{s}.pt" for s in range(4)],
-    "Lunges": [f"bilstm_ec3d_best_pex_lunges_s{s}.pt" for s in range(4)],
-    "Plank": [f"bilstm_ec3d_best_pex_plank_s{s}.pt" for s in range(4)],
+    "SQUAT": [f"bilstm_ec3d_best_pex_squat{_SUFFIX}_s{s}.pt" for s in range(4)],
+    "Lunges": [f"bilstm_ec3d_best_pex_lunges{_SUFFIX}_s{s}.pt" for s in range(4)],
+    "Plank": [f"bilstm_ec3d_best_pex_plank{_SUFFIX}_s{s}.pt" for s in range(4)],
 }
 
 

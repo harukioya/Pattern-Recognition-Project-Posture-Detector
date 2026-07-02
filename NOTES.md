@@ -124,3 +124,98 @@ What still needs a live camera:
 - [x] This NOTES.md.
 - [ ] Live-camera comparison vs. `main` — pending user verification.
 - [ ] **Not merged to `main`.** This is an experiment branch by design.
+
+---
+
+# Experiment — enrich all three exercises with YouTube correct-form videos
+
+Goal: broaden what "correct" looks like for each exercise beyond EC3D's
+captured subjects, using short correct-form clips sourced from YouTube —
+additive only, EC3D data and loading logic untouched.
+
+Why this should help: the gate-misclassification issue at the top of this
+file was traced to the domain gap between EC3D's 4-camera 3D and MediaPipe's
+monocular pseudo-3D. Videos run through `import_video_data.py` go through
+the same MediaPipe monocular pipeline the live app uses at inference — so
+this data sits in the *same domain* the model is actually evaluated in,
+unlike EC3D itself.
+
+Scope note: correct-only (no incorrect-form videos — too diverse to source
+reliably) and mixed side/oblique camera angles. Fine for this purpose since
+the goal is broadening what "correct" looks like, not teaching a new
+decision boundary; `train.py`'s inverse-frequency `class_weights()`
+(beta=0.5) keeps it from dominating the loss as it grows.
+
+## Data
+
+- 45 videos, 15 each for SQUAT / Lunges / Plank, under
+  `data/correct-youtube/youtube-{squat,lunge,plank}/` (gitignored, not in
+  git — mostly 5-60s clips, side/oblique view).
+- Imported via `import_video_data.py --label <Exercise>/correct` →
+  `data/self_recorded/*.pkl` (also gitignored). `import_video_data.py`
+  drops any frame with no detected `pose_world_landmarks`, so bad frames
+  are skipped, not corrupted in.
+- Detection quality: 41/45 clips at 100% frame detection; worst case 90.3%
+  (`squat14`). Nothing discarded.
+- After 64-frame windowing (`SelfRecordedDataset`, non-overlapping):
+  **89 windows** added to `SQUAT/correct`, **133** to `Lunges/correct`,
+  **94** to `Plank/correct`.
+
+## Integration
+
+`--include-self-data` concatenates the imported `.pkl` data onto the
+*EC3D train split only* (`train.py:207-216`) — val/test stay pure EC3D
+(Vidit/Isinsu), so the results below are a clean before/after on data the
+new videos never touched. Trained into a separately-tagged checkpoint set
+(`pex_<ex>_enriched_s0..3`) so the original baseline (`pex_<ex>_s0..3`) is
+untouched on disk.
+
+Reproduced with:
+
+```bash
+for ex in SQUAT Lunges Plank; do
+  lower=$(echo "$ex" | tr '[:upper:]' '[:lower:]')
+  for seed in 0 1 2 3; do
+    python src/train.py --arch hybrid --feature-mode pose_extras \
+      --train-split trainval --epochs 60 --seed $seed \
+      --ckpt-tag pex_${lower}_enriched_s${seed} \
+      --exercise-filter $ex --include-self-data --quiet
+  done
+done
+```
+
+## Results (4-seed ensemble, Isinsu test split, macro-F1)
+
+| Exercise | baseline | enriched | delta |
+|---|---|---|---|
+| SQUAT  | 0.759 | **0.817** | +0.058 |
+| Lunges | **0.829** | 0.799 | −0.030 |
+| Plank  | 0.963 | 1.000 | +0.037 |
+
+- **SQUAT** — clean improvement. `SQUAT/correct` recall itself is
+  unchanged (10/11 both); the gain is in `not_low_enough` (3/7 → 5/7), so
+  the extra correct-only data isn't just inflating the class it enriched.
+- **Lunges** — small regression: `not_low_enough` recall dropped
+  (7/10 → 6/10), everything else unchanged. One flipped example, but a
+  real (if small) dip — the risk flagged when this was planned.
+- **Plank** — baseline was already near-ceiling on a tiny test set (23
+  clips); the "gain" is one flipped example (`hunch_back` 9/10 → 10/10).
+  Likely noise rather than a real signal either way.
+
+## How to test both versions
+
+The app picks which checkpoint set to load via the `PEX_VARIANT` env var
+(`src/app/pipeline_thread.py`) — no file renaming needed, baseline and
+enriched checkpoints can sit side by side in `checkpoints/`.
+
+1. Drop the 12 `bilstm_ec3d_best_pex_{squat,lunges,plank}_enriched_s0..3.pt`
+   files into `checkpoints/`, alongside the existing baseline ones.
+2. Run the app:
+   ```bash
+   python src/app/run.py                        # baseline (default)
+   PEX_VARIANT=enriched python src/app/run.py    # EC3D + YouTube
+   ```
+3. `PEX_VARIANT` is unset by default, so anyone who doesn't have the
+   enriched checkpoints yet sees no behaviour change at all.
+
+
