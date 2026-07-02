@@ -11,6 +11,10 @@ data/*
 
 # Trained model checkpoints (regenerate via train.py / train_gate.py)
 checkpoints/*.pt
+# ...except the per-exercise specialist ensembles (baseline + YouTube-
+# enriched comparison, ~18MB) — small enough to share directly so
+# teammates can A/B test without retraining. See NOTES.md.
+!checkpoints/bilstm_ec3d_best_pex_*.pt
 
 # MediaPipe model files (download via curl from Google's CDN)
 models/*.task
