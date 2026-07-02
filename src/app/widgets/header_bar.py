@@ -60,6 +60,7 @@ class HeaderBar(QWidget):
             self._record_button.setObjectName("RecordButton")
             self._record_button.setCursor(Qt.CursorShape.PointingHandCursor)
             self._record_button.setProperty("recording", False)
+            self._record_button.setEnabled(False)
             self._record_button.clicked.connect(self.record_toggled.emit)
 
         layout.addWidget(self._exercise, 1)
@@ -131,6 +132,9 @@ class HeaderBar(QWidget):
                 "border: none;"
             )
             self._right.setText("Posture Coach")
+            if self._record_button is not None:
+                self._record_button.setEnabled(False)
+                self.set_recording(False, "")
             return
         display = exercise if exercise == "Lunges" else exercise.capitalize()
         self._exercise.setText(display)
@@ -141,6 +145,8 @@ class HeaderBar(QWidget):
             "background: transparent;"
             "border: none;"
         )
+        if self._record_button is not None:
+            self._record_button.setEnabled(True)
         if self._recording_enabled:
             self._right.setText("R record    H home    Q quit")
         else:

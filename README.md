@@ -172,9 +172,9 @@ app started Python. Grant it, fully quit and reopen Terminal, then re-run.
 
 ---
 
-## Optional squat recording, review, and SAM3D mesh generation
+## Optional workout recording, review, and SAM3D mesh generation
 
-This branch also includes a squat-only recording flow and a video reviewer that
+This branch also includes a workout recording flow and a video reviewer that
 can send the paused frame to Meta's SAM 3D Body model. SAM3D is intentionally
 kept outside this repository: do not commit Docker images, model checkpoints,
 `requests/`, or generated `outputs/` to this project.
@@ -254,12 +254,12 @@ $env:SAM3D_CONTAINER_ROOT = "/workspace/SAM3D"
 
 Set those variables only if your paths or container name differ.
 
-### Run the squat tools
+### Run the recording and review tools
 
-Record a squat video from the live camera:
+Record a video for any supported exercise from the same mode picker used by the main app:
 
 ```powershell
-python src/app/run_squat_record.py
+python src/app/run_record.py
 ```
 
 Open the video reviewer and generate a SAM3D mesh from a paused frame:

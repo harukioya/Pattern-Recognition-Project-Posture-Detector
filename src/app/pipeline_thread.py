@@ -172,7 +172,8 @@ class PipelineThread(QThread):
 
     def _new_recording_path(self) -> Path:
         self.recording_dir.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("squat_%Y%m%d_%H%M%S")
+        exercise_slug = self.mode.lower().replace(" ", "_")
+        stamp = time.strftime(f"{exercise_slug}_%Y%m%d_%H%M%S")
         path = self.recording_dir / f"{stamp}.mp4"
         index = 1
         while path.exists():
