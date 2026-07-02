@@ -1,4 +1,4 @@
-"""MainWindow — the Posture Coach desktop app.
+"""MainWindow - the Posture Coach desktop app.
 
 On the experiment/per-exercise-modes branch the main window swaps between
 a WelcomeScreen (mode picker) and the workout view via QStackedWidget.
@@ -34,16 +34,26 @@ STYLE_PATH = APP_DIR / "style.qss"
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        window_title: str = "Posture Coach",
+        forced_exercise: str | None = None,
+        recording_enabled: bool = False,
+    ) -> None:
         super().__init__()
         self.setObjectName("MainWindow")
-        self.setWindowTitle("Posture Coach")
+        self.setWindowTitle(window_title)
+        self.recording_enabled = recording_enabled
+        self.forced_exercise = forced_exercise
         self.resize(QSize(1400, 900))
 
-        self.header = HeaderBar(self)
+        self.header = HeaderBar(self, recording_enabled=recording_enabled)
         self.status = AppStatusBar(self)
+        if recording_enabled:
+            self.header.record_toggled.connect(self._toggle_recording)
 
-        # Workout page — camera on the left, panels on the right.
+        # Workout page - camera on the left, panels on the right.
         workout = QWidget(self)
         workout.setObjectName("WorkoutPage")
         wh = QHBoxLayout(workout)
@@ -64,7 +74,7 @@ class MainWindow(QMainWindow):
         right_col.addWidget(self.coach, stretch=2)
         wh.addLayout(right_col, stretch=3)
 
-        # Landing page — three exercise cards.
+        # Landing page - three exercise cards.
         self.welcome = WelcomeScreen(self)
         self.welcome.mode_selected.connect(self._on_mode_selected)
 
@@ -93,11 +103,14 @@ class MainWindow(QMainWindow):
 
         # Stylesheet
         if STYLE_PATH.exists():
-            self.setStyleSheet(STYLE_PATH.read_text())
+            self.setStyleSheet(STYLE_PATH.read_text(encoding="utf-8"))
 
         self._go_home()
 
     # ------------------------------------------------------------------ modes
+    def start_mode(self, exercise: str) -> None:
+        self._on_mode_selected(exercise)
+
     def _on_mode_selected(self, exercise: str) -> None:
         if exercise not in EXERCISES:
             return
@@ -117,6 +130,8 @@ class MainWindow(QMainWindow):
         self.pipeline.fps_updated.connect(self.status.set_fps)
         self.pipeline.buffer_updated.connect(self.status.set_buffer)
         self.pipeline.coach_should_request.connect(self.coach_thread.request_cue)
+        if self.recording_enabled:
+            self.pipeline.recording_state_changed.connect(self.header.set_recording)
         self.pipeline.start()
 
         self.stack.setCurrentIndex(1)
@@ -127,6 +142,8 @@ class MainWindow(QMainWindow):
         self.pipeline.stop()
         self.pipeline.wait(2000)
         self.pipeline = None
+        if self.recording_enabled:
+            self.header.set_recording(False, "")
 
     def _go_home(self) -> None:
         self._teardown_pipeline()
@@ -136,6 +153,10 @@ class MainWindow(QMainWindow):
         self.coach.reset()
         self.stack.setCurrentIndex(0)
 
+    def _toggle_recording(self) -> None:
+        if self.pipeline is not None:
+            self.pipeline.toggle_recording()
+
     # ------------------------------------------------------------------ keys
     def keyPressEvent(self, ev) -> None:  # noqa: N802
         key = ev.key()
@@ -143,7 +164,7 @@ class MainWindow(QMainWindow):
             self.close()
             return
         if self.stack.currentIndex() == 0:
-            # Welcome hotkeys — S / L / P jump straight to a mode.
+            # Welcome hotkeys - S / L / P jump straight to a mode.
             if key == Qt.Key.Key_S:
                 self._on_mode_selected("SQUAT")
                 return
@@ -154,7 +175,10 @@ class MainWindow(QMainWindow):
                 self._on_mode_selected("Plank")
                 return
         else:
-            # Workout hotkeys — H / Home / Escape returns to welcome.
+            if self.recording_enabled and key == Qt.Key.Key_R:
+                self._toggle_recording()
+                return
+            # Workout hotkeys - H / Home / Escape returns to welcome.
             if key in (Qt.Key.Key_H, Qt.Key.Key_Home, Qt.Key.Key_Escape):
                 self._go_home()
                 return

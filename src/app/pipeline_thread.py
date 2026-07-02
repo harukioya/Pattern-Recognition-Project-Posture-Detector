@@ -9,9 +9,11 @@ blocking on inference or video I/O.
 """
 from __future__ import annotations
 
+import sys
 import time
 from collections import deque
 from pathlib import Path
+from threading import Lock
 
 import cv2
 import mediapipe as mp
@@ -23,7 +25,6 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtGui import QImage
 
 # Reach back into the existing project code
-import sys
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from blazepose_to_body25 import blazepose_to_body25, normalise_like_ec3d
@@ -108,12 +109,14 @@ class PipelineThread(QThread):
     fps_updated = pyqtSignal(float)
     buffer_updated = pyqtSignal(int)
     coach_should_request = pyqtSignal(str, float)
+    recording_state_changed = pyqtSignal(bool, str)
 
     def __init__(
         self,
         mode: str,
         camera_index: int = 0,
         coach_interval_s: float = 4.0,
+        recording_dir: Path | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -122,10 +125,115 @@ class PipelineThread(QThread):
         self.mode = mode
         self.camera_index = camera_index
         self.coach_interval_s = coach_interval_s
+        self.recording_dir = recording_dir or (ROOT / "recordings")
+        self._recording_lock = Lock()
+        self._recording_requested = False
+        self._video_writer = None
+        self._recording_path: Path | None = None
         self._running = True
 
     def stop(self) -> None:
         self._running = False
+        self.stop_recording()
+
+    def start_recording(self) -> None:
+        path = self._new_recording_path()
+        with self._recording_lock:
+            if self._recording_requested:
+                return
+            self._recording_requested = True
+            self._recording_path = path
+        print(f"[recording] start requested: {path}")
+        self.recording_state_changed.emit(True, str(path))
+
+    def stop_recording(self) -> None:
+        with self._recording_lock:
+            if not self._recording_requested and self._video_writer is None:
+                return
+            writer = self._video_writer
+            path = self._recording_path
+            self._recording_requested = False
+            self._video_writer = None
+            self._recording_path = None
+        if writer is not None:
+            writer.release()
+            print(f"[recording] saved: {path}")
+        else:
+            print("[recording] stopped before a frame was written")
+        self.recording_state_changed.emit(False, str(path or ""))
+
+    def toggle_recording(self) -> None:
+        with self._recording_lock:
+            should_stop = self._recording_requested or self._video_writer is not None
+        if should_stop:
+            self.stop_recording()
+        else:
+            self.start_recording()
+
+    def _new_recording_path(self) -> Path:
+        self.recording_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("squat_%Y%m%d_%H%M%S")
+        path = self.recording_dir / f"{stamp}.mp4"
+        index = 1
+        while path.exists():
+            path = self.recording_dir / f"{stamp}_{index}.mp4"
+            index += 1
+        return path
+
+    def _create_recording_writer(
+        self,
+        frame_bgr: np.ndarray,
+        fps: float,
+    ) -> tuple[cv2.VideoWriter | None, Path | None]:
+        height, width = frame_bgr.shape[:2]
+        path = self._recording_path or self._new_recording_path()
+        writer = cv2.VideoWriter(
+            str(path),
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            fps,
+            (width, height),
+        )
+        if writer.isOpened():
+            return writer, path
+        writer.release()
+
+        fallback = path.with_suffix(".avi")
+        writer = cv2.VideoWriter(
+            str(fallback),
+            cv2.VideoWriter_fourcc(*"XVID"),
+            fps,
+            (width, height),
+        )
+        if writer.isOpened():
+            return writer, fallback
+        writer.release()
+        return None, None
+
+    def _record_frame(self, frame_bgr: np.ndarray, fps: float) -> None:
+        emit_path: str | None = None
+        emit_stopped = False
+        with self._recording_lock:
+            if not self._recording_requested:
+                return
+            if self._video_writer is None:
+                writer, path = self._create_recording_writer(frame_bgr, fps)
+                if writer is None or path is None:
+                    print("[recording] could not open a video writer")
+                    self._recording_requested = False
+                    self._recording_path = None
+                    emit_stopped = True
+                else:
+                    self._video_writer = writer
+                    if path != self._recording_path:
+                        self._recording_path = path
+                        emit_path = str(path)
+                    print(f"[recording] writing: {path}")
+            if self._video_writer is not None:
+                self._video_writer.write(frame_bgr)
+        if emit_path is not None:
+            self.recording_state_changed.emit(True, emit_path)
+        if emit_stopped:
+            self.recording_state_changed.emit(False, "")
 
     def run(self) -> None:
         device = _pick_device()
@@ -161,6 +269,10 @@ class PipelineThread(QThread):
             print(f"[pipeline] could not open camera {self.camera_index}")
             return
 
+        recording_fps = cap.get(cv2.CAP_PROP_FPS)
+        if recording_fps <= 1.0 or recording_fps > 120.0:
+            recording_fps = 30.0
+
         base_options = mp_python.BaseOptions(model_asset_path=str(MODEL_FILE))
         options = vision.PoseLandmarkerOptions(
             base_options=base_options,
@@ -183,6 +295,7 @@ class PipelineThread(QThread):
             if not ok:
                 continue
             frame_bgr = cv2.flip(frame_bgr, 1)
+            self._record_frame(frame_bgr, recording_fps)
             rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
             h, w, _ = rgb.shape
 
@@ -222,7 +335,7 @@ class PipelineThread(QThread):
                     top_idx = int(np.argmax(last_probs))
                     top_label = local_labels[top_idx]
 
-                    # Person-not-moving heuristic — same as gate-mode pipeline.
+                    # Person-not-moving heuristic - same as gate-mode pipeline.
                     seq_var = float(np.mean(np.var(seq, axis=0)))
                     is_uncertain = seq_var < 0.0008
 
@@ -264,5 +377,6 @@ class PipelineThread(QThread):
                 fps_t0 = now
                 fps_frames = 0
 
+        self.stop_recording()
         cap.release()
         landmarker.close()

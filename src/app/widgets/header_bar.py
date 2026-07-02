@@ -1,12 +1,14 @@
-"""HeaderBar — prominent top strip showing the current exercise.
+"""HeaderBar - prominent top strip showing the current exercise.
 
 Sits above the main camera+panels row. Mirrors AppStatusBar's design at the
 top of the window.
 """
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, pyqtSlot
-from PyQt6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QWidget
+from pathlib import Path
+
+from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
+from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
 
 from app.state import Prediction
 
@@ -15,14 +17,24 @@ _BG = "#0e1117"
 _BORDER = "#1f2632"
 _TEXT_PRIMARY = "#f0f2f5"
 _TEXT_SECOND = "#9aa1b3"
+_RECORD = "#ff5f57"
+_RECORD_DARK = "#2b1111"
 
 
 class HeaderBar(QWidget):
-    def __init__(self, parent: QWidget | None = None) -> None:
+    record_toggled = pyqtSignal()
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        recording_enabled: bool = False,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("HeaderBar")
         self.setFixedHeight(64)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._recording_enabled = recording_enabled
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(20, 10, 20, 10)
@@ -35,15 +47,25 @@ class HeaderBar(QWidget):
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
 
-        # Subtitle on the right — small app branding
+        # Subtitle on the right - small app branding / shortcuts
         self._right = QLabel("Posture Coach")
         self._right.setObjectName("HeaderRight")
         self._right.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
 
+        self._record_button: QPushButton | None = None
+        if recording_enabled:
+            self._record_button = QPushButton("Record")
+            self._record_button.setObjectName("RecordButton")
+            self._record_button.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._record_button.setProperty("recording", False)
+            self._record_button.clicked.connect(self.record_toggled.emit)
+
         layout.addWidget(self._exercise, 1)
         layout.addWidget(self._right, 0)
+        if self._record_button is not None:
+            layout.addWidget(self._record_button, 0)
 
         # Track the active per-exercise mode. When set, prediction updates
         # keep the header pinned to this label instead of following the
@@ -70,6 +92,23 @@ class HeaderBar(QWidget):
                 font-weight: 500;
                 background: transparent;
                 border: none;
+            }}
+            QPushButton#RecordButton {{
+                background-color: transparent;
+                color: {_TEXT_PRIMARY};
+                border: 1px solid {_BORDER};
+                border-radius: 6px;
+                padding: 7px 14px;
+                font-size: 11pt;
+                font-weight: 700;
+            }}
+            QPushButton#RecordButton:hover {{
+                border-color: {_RECORD};
+            }}
+            QPushButton#RecordButton[recording="true"] {{
+                background-color: {_RECORD_DARK};
+                color: {_RECORD};
+                border-color: {_RECORD};
             }}
             """
         )
@@ -102,7 +141,10 @@ class HeaderBar(QWidget):
             "background: transparent;"
             "border: none;"
         )
-        self._right.setText("H → home    Q → quit")
+        if self._recording_enabled:
+            self._right.setText("R record    H home    Q quit")
+        else:
+            self._right.setText("H home    Q quit")
 
     @pyqtSlot(object)
     def set_prediction(self, pred: Prediction) -> None:
@@ -129,3 +171,22 @@ class HeaderBar(QWidget):
             "background: transparent;"
             "border: none;"
         )
+
+    @pyqtSlot(bool, str)
+    def set_recording(self, active: bool, path: str) -> None:
+        if self._record_button is None:
+            return
+        self._record_button.setText("Stop" if active else "Record")
+        self._record_button.setProperty("recording", bool(active))
+        self._record_button.style().unpolish(self._record_button)
+        self._record_button.style().polish(self._record_button)
+        self._record_button.update()
+
+        if active:
+            self._right.setText("Recording")
+        elif path:
+            self._right.setText(f"Saved {Path(path).name}")
+        elif self._mode is not None:
+            self._right.setText("R record    H home    Q quit")
+        else:
+            self._right.setText("Posture Coach")

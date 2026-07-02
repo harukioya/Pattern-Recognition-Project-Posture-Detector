@@ -172,6 +172,119 @@ app started Python. Grant it, fully quit and reopen Terminal, then re-run.
 
 ---
 
+## Optional squat recording, review, and SAM3D mesh generation
+
+This branch also includes a squat-only recording flow and a video reviewer that
+can send the paused frame to Meta's SAM 3D Body model. SAM3D is intentionally
+kept outside this repository: do not commit Docker images, model checkpoints,
+`requests/`, or generated `outputs/` to this project.
+
+The reviewer currently uses a Docker backend. Docker is only used to provide a
+Linux CUDA/PyTorch environment for SAM3D; the posture app code remains in this
+repository.
+
+### Recommended Windows + Docker layout
+
+```text
+Pattern-Recognition-Project-Posture-Detector/   # this repository
+E:/DockerE/SAM3D/                               # external SAM3D workspace
+  sam-3d-body/                                  # official Meta SAM3D repo
+  requests/                                     # generated frames, ignored
+  outputs/                                      # generated PNG/OBJ, ignored
+```
+
+The examples below use E:\DockerE\SAM3D as the external workspace. If you choose a different location, set the environment variables shown below before launching the reviewer.
+
+From PowerShell, create the external SAM3D workspace and clone SAM3D:
+
+```powershell
+mkdir E:\DockerE\SAM3D
+cd E:\DockerE\SAM3D
+git clone https://github.com/facebookresearch/sam-3d-body.git
+```
+
+The mesh-export helper lives in this repository at
+`tools/sam3d/demo_export_mesh.py`. The reviewer copies that helper into the
+external SAM3D checkout before each generation job, so the submitted project
+contains the custom SAM3D bridge code while the official SAM3D repo remains an
+external dependency.
+
+Create or start the Docker container. The mount path must match what the app
+uses as `SAM3D_CONTAINER_ROOT`:
+
+```powershell
+docker run --gpus all -it --name sam3d_body `
+  --shm-size=16g `
+  -v E:\DockerE\SAM3D:/workspace/SAM3D `
+  pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
+```
+
+Inside the container, follow the official SAM3D installation guide. The minimum
+setup used for this project is:
+
+```bash
+cd /workspace/SAM3D/sam-3d-body
+apt-get update
+apt-get install -y git ffmpeg libgl1 libglib2.0-0 libegl1 build-essential ninja-build cmake
+pip install -U pip
+pip install pytorch-lightning pyrender opencv-python yacs scikit-image einops timm dill pandas rich hydra-core hydra-submitit-launcher hydra-colorlog pyrootutils webdataset chump networkx==3.2.1 roma joblib seaborn wandb appdirs appnope ffmpeg cython jsonlines pytest xtcocotools loguru optree fvcore black pycocotools tensorboard huggingface_hub
+pip install 'git+https://github.com/facebookresearch/detectron2.git@a1ce2f9' --no-build-isolation --no-deps
+pip install git+https://github.com/microsoft/MoGe.git
+hf auth login
+hf download facebook/sam-3d-body-dinov3 --local-dir checkpoints/sam-3d-body-dinov3
+```
+
+The Hugging Face checkpoint repository requires approval before `hf download`
+will work. See the official SAM3D repository and `INSTALL.md` for the latest
+model-access rules.
+
+If the container already exists but is stopped, restart it with:
+
+```powershell
+docker start sam3d_body
+```
+
+The reviewer defaults are:
+
+```powershell
+$env:SAM3D_HOST_ROOT = "E:\DockerE\SAM3D"
+$env:SAM3D_CONTAINER = "sam3d_body"
+$env:SAM3D_CONTAINER_ROOT = "/workspace/SAM3D"
+```
+
+Set those variables only if your paths or container name differ.
+
+### Run the squat tools
+
+Record a squat video from the live camera:
+
+```powershell
+python src/app/run_squat_record.py
+```
+
+Open the video reviewer and generate a SAM3D mesh from a paused frame:
+
+```powershell
+python src/app/run_squat_review.py
+```
+
+In the reviewer, choose a video, pause on a frame, then click `Generate 3D`.
+Outputs are written under:
+
+```text
+E:/DockerE/SAM3D/outputs/<job_id>/
+```
+
+The main files are:
+
+```text
+frame.png                 # SAM3D rendered preview
+frame_person0.obj         # raw SAM3D OBJ
+frame_person0_viewer.obj  # viewer-oriented OBJ for tools like Windows 3D Viewer
+```
+
+---
+
 ## What to expect when you run the app
 
 - A 1400×900 window with the camera on the left, three stacked cards on the
