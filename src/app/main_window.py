@@ -103,6 +103,7 @@ class MainWindow(QMainWindow):
             return
         self._teardown_pipeline()
         self.header.set_mode(exercise)
+        self.header.show()
         self.bars.set_mode(exercise)
         self.verdict.reset_for_mode(exercise)
         self.coach.reset()
@@ -131,6 +132,7 @@ class MainWindow(QMainWindow):
     def _go_home(self) -> None:
         self._teardown_pipeline()
         self.header.set_mode(None)
+        self.header.hide()
         self.bars.set_mode(None)
         self.verdict.reset_for_mode(None)
         self.coach.reset()

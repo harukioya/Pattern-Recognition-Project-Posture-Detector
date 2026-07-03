@@ -6,6 +6,8 @@ Live workout form classifier — final project for the Pattern Recognition gradu
 
 Three per-exercise Hybrid-STGCN specialists trained on EC3D 3D-pose data, deployed as a PyQt6 desktop app driven by MediaPipe pose estimation. The user picks Squat, Lunges, or Plank on a welcome screen; the selected exercise's 4-seed ensemble classifies form errors in real time and (optionally) an Ollama-backed coach offers a one-line cue when form is off.
 
+![Welcome screen](assets/welcome.png)
+
 ## Requirements
 
 - macOS with a webcam.
